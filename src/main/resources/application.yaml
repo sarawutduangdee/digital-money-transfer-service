@@ -1,0 +1,3 @@
+spring:
+  application:
+    name: digital-money-transfer-service
