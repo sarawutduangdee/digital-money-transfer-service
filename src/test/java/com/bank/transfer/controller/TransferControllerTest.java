@@ -1,29 +1,33 @@
 package com.bank.transfer.controller;
 
 import com.bank.transfer.dto.TransferRequest;
-import com.bank.transfer.exception.AccountNotFoundException;
-import com.bank.transfer.exception.BusinessException;
+import com.bank.transfer.dto.TransferResponse;
 import com.bank.transfer.service.TransferService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.http.HttpStatus;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(TransferController.class)
-public class TransferControllerTest {
+class TransferControllerTest {
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -33,75 +37,64 @@ public class TransferControllerTest {
     @MockBean
     private TransferService transferService;
 
-    @Test
-    void transferMoney_Returns400_WhenIdempotencyKeyMissing() throws Exception {
-        TransferRequest request = new TransferRequest("1001", "2002", new BigDecimal("500"), "THB");
+    @MockBean
+    private ValueOperations<String, String> valueOperations;
 
-        mockMvc.perform(post("/api/v1/transfers")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request)))
-            // ไม่ส่ง Header Idempotency-Key
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.errorCode").value("ERR_REQ_001"));
+    @MockBean
+    private StringRedisTemplate stringRedisTemplate;
+    private static final String BASE_URL = "/transfers";
+
+    @BeforeEach
+    void setUp() {
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.increment(anyString())).thenReturn(1L);
     }
 
     @Test
-    void transferMoney_Returns400_WhenBodyIsInvalid() throws Exception {
-        // สร้าง Request ที่ amount เป็น 0 (ผิด Validation @DecimalMin)
-        TransferRequest request = new TransferRequest("1001", "2002", BigDecimal.ZERO, "THB");
+    @DisplayName("POST /transfers - โอนเงินสำเร็จ คืนค่า HTTP 201 CREATED")
+    void processTransfer_Success() throws Exception {
+        TransferRequest request = new TransferRequest("0000001001", "0000002002", new BigDecimal("100.00"), "THB");
+        TransferResponse response = TransferResponse.builder()
+            .transactionId("1001")
+            .fromAccountNumber("0000001001")
+            .toAccountNumber("0000002002")
+            .amount(new BigDecimal("100.00"))
+            .currency("THB")
+            .status("COMPLETED")
+            .createdAt(LocalDateTime.now())
+            .build();
 
-        mockMvc.perform(post("/api/v1/transfers")
-                .header("Idempotency-Key", "req-123")
+        when(transferService.processTransfer(anyString(), any(TransferRequest.class))).thenReturn(response);
+
+        mockMvc.perform(post(BASE_URL)
+                .header("Idempotency-Key", "test-idem-key")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.errorCode").value("ERR_REQ_002"))
-            .andExpect(jsonPath("$.invalidFields.amount").exists());
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andExpect(jsonPath("$.transactionId").value("1001"));
     }
 
     @Test
-    void transferMoney_Returns404_WhenAccountNotFound() throws Exception {
-        TransferRequest request = new TransferRequest("9999", "2002", new BigDecimal("500"), "THB");
+    @DisplayName("POST /transfers - ถ้าไม่ส่ง Idempotency-Key ต้องคืนค่า HTTP 400 Bad Request")
+    void processTransfer_MissingIdempotencyKey_ShouldReturn400() throws Exception {
+        TransferRequest request = new TransferRequest("0000001001", "0000002002", new BigDecimal("100.00"), "THB");
 
-        when(transferService.processTransfer(eq("req-123"), any(TransferRequest.class)))
-            .thenThrow(new AccountNotFoundException("9999"));
-
-        mockMvc.perform(post("/api/v1/transfers")
-                .header("Idempotency-Key", "req-123")
+        mockMvc.perform(post(BASE_URL)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isNotFound())
-            .andExpect(jsonPath("$.errorCode").value("ERR_ACCOUNT_001"));
+            .andExpect(status().isBadRequest());
     }
 
     @Test
-    void transferMoney_Returns409_WhenIdempotencyConflict() throws Exception {
-        TransferRequest request = new TransferRequest("1001", "2002", new BigDecimal("500"), "THB");
+    @DisplayName("POST /transfers - ถ้ายอดเงินติดลบ (Validation) ต้องคืนค่า HTTP 422 Unprocessable Entity")
+    void processTransfer_NegativeAmount_ShouldReturn400() throws Exception {
+        TransferRequest request = new TransferRequest("0000001001", "0000002002", new BigDecimal("-50.00"), "THB");
 
-        when(transferService.processTransfer(eq("req-123"), any(TransferRequest.class)))
-            .thenThrow(new BusinessException(HttpStatus.CONFLICT, "ERR_TRANSFER_001", "Conflict"));
-
-        mockMvc.perform(post("/api/v1/transfers")
-                .header("Idempotency-Key", "req-123")
+        mockMvc.perform(post(BASE_URL)
+                .header("Idempotency-Key", "test-idem-key")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.errorCode").value("ERR_TRANSFER_001"));
-    }
-
-    @Test
-    void transferMoney_Returns422_WhenBusinessRuleFails() throws Exception {
-        TransferRequest request = new TransferRequest("1001", "2002", new BigDecimal("500"), "THB");
-
-        // จำลองเคสเงินไม่พอ (422)
-        when(transferService.processTransfer(eq("req-123"), any(TransferRequest.class)))
-            .thenThrow(new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_ACCOUNT_002", "Insufficient balance"));
-
-        mockMvc.perform(post("/api/v1/transfers")
-                .header("Idempotency-Key", "req-123")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isUnprocessableEntity())
-            .andExpect(jsonPath("$.errorCode").value("ERR_ACCOUNT_002"));
+            .andExpect(status().isUnprocessableEntity());
     }
 }

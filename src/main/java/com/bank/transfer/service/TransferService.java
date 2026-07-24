@@ -29,6 +29,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -52,6 +53,7 @@ public class TransferService {
     private final CacheManager cacheManager;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     private static final String IDEMPOTENCY_KEY_PREFIX = "idempotency:transfer:";
     private static final long IDEMPOTENCY_TTL_HOURS = 24;
@@ -106,7 +108,9 @@ public class TransferService {
             .orElseThrow(() -> new AccountNotFoundException(request.getToAccountNumber()));
 
         TransferResponse response = distributedLockService.executeWithTwoAccountsLock(fromAccObj.getId(), toAccObj.getId(), () ->
-            executeTransferInTransaction(idempotencyKey, request, fromAccObj.getId(), toAccObj.getId())
+            transactionTemplate.execute(status ->
+                executeTransferInTransaction(idempotencyKey, request, fromAccObj.getId(), toAccObj.getId())
+            )
         );
 
         cacheIdempotencyResult(cacheKey, currentHash, response);
@@ -114,7 +118,6 @@ public class TransferService {
         return response;
     }
 
-    @Transactional
     public TransferResponse executeTransferInTransaction(String idempotencyKey, TransferRequest request, Long fromId, Long toId) {
 
         Optional<Transfer> existingTransferOpt = transferRepository.findByIdempotencyKey(idempotencyKey);

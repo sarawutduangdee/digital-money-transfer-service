@@ -94,7 +94,7 @@ public class AccountService {
         AccountResponse account = getAccountById(id);
         return new AccountBalanceResponse(
             account.getId(),
-            account.getBalance().setScale(2, RoundingMode.HALF_UP),
+            account.getBalance().setScale(2),
             account.getCurrency(),
             account.getCreatedAt()
         );

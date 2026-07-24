@@ -1,10 +1,18 @@
 package com.bank.transfer.dto;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 import java.math.BigDecimal;
 
-public record WithdrawResponse(
-    Long accountId,
-    BigDecimal balance,
-    Long ledgerEntryId
-) {
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class WithdrawResponse {
+    private Long accountId;
+    private BigDecimal balance;
+    private Long ledgerEntryId;
 }
