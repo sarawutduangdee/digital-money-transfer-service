@@ -8,6 +8,7 @@ import com.bank.transfer.domain.OutboxEvent;
 import com.bank.transfer.domain.OutboxStatus;
 import com.bank.transfer.domain.Transfer;
 import com.bank.transfer.domain.TransferStatus;
+import com.bank.transfer.dto.IdempotencyRecord;
 import com.bank.transfer.dto.TransferCompletedEvent;
 import com.bank.transfer.dto.TransferRequest;
 import com.bank.transfer.dto.TransferResponse;
@@ -22,14 +23,21 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.Cache;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -41,9 +49,32 @@ public class TransferService {
     private final LedgerEntryRepository ledgerEntryRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final DistributedLockService distributedLockService;
+    private final CacheManager cacheManager;
+    private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
+    private static final String IDEMPOTENCY_KEY_PREFIX = "idempotency:transfer:";
+    private static final long IDEMPOTENCY_TTL_HOURS = 24;
+
     public TransferResponse processTransfer(String idempotencyKey, TransferRequest request) {
+        String cacheKey = IDEMPOTENCY_KEY_PREFIX + idempotencyKey;
+        String currentHash = calculateRequestHash(request);
+
+        String cachedJson = redisTemplate.opsForValue().get(cacheKey);
+        if (cachedJson != null) {
+            try {
+                IdempotencyRecord record = objectMapper.readValue(cachedJson, IdempotencyRecord.class);
+                if (record.requestHash().equals(currentHash)) {
+                    log.info("Idempotency hit from Redis cache for key: {}", idempotencyKey);
+                    return record.response();
+                } else {
+                    throw new BusinessException(HttpStatus.CONFLICT, "ERR_TRANSFER_001", "Idempotency-Key already used with a different payload");
+                }
+            } catch (JsonProcessingException e) {
+                log.error("Failed to parse cached idempotency record", e);
+            }
+        }
+
         Optional<Transfer> existingTransferOpt = transferRepository.findByIdempotencyKey(idempotencyKey);
         if (existingTransferOpt.isPresent()) {
             Transfer existing = existingTransferOpt.get();
@@ -54,7 +85,9 @@ public class TransferService {
                                     && existing.getCurrency().equals(request.getCurrency());
 
             if (isSamePayload) {
-                return buildTransferResponse(existing, existing.getFromAccount(), existing.getToAccount());
+                TransferResponse response = buildTransferResponse(existing, existing.getFromAccount(), existing.getToAccount());
+                cacheIdempotencyResult(cacheKey, currentHash, response);
+                return response;
             } else {
                 throw new BusinessException(HttpStatus.CONFLICT, "ERR_TRANSFER_001", "Idempotency-Key already used with a different payload");
             }
@@ -72,9 +105,13 @@ public class TransferService {
         Account toAccObj = accountRepository.findByAccountNumber(request.getToAccountNumber())
             .orElseThrow(() -> new AccountNotFoundException(request.getToAccountNumber()));
 
-        return distributedLockService.executeWithTwoAccountsLock(fromAccObj.getId(), toAccObj.getId(), () ->
+        TransferResponse response = distributedLockService.executeWithTwoAccountsLock(fromAccObj.getId(), toAccObj.getId(), () ->
             executeTransferInTransaction(idempotencyKey, request, fromAccObj.getId(), toAccObj.getId())
         );
+
+        cacheIdempotencyResult(cacheKey, currentHash, response);
+
+        return response;
     }
 
     @Transactional
@@ -144,7 +181,7 @@ public class TransferService {
             );
 
             OutboxEvent event = OutboxEvent.builder()
-                .aggregateType("Transfer").aggregateId(String.valueOf(transfer.getId()))
+                .aggregateType("Traznsfer").aggregateId(String.valueOf(transfer.getId()))
                 .eventType("TransferCompleted").payload(objectMapper.writeValueAsString(eventPayload))
                 .status(OutboxStatus.PENDING).build();
             outboxEventRepository.save(event);
@@ -153,7 +190,27 @@ public class TransferService {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "ERR_SYS_002", "Failed to generate event payload");
         }
 
+        evictAccountCache(fromAccount.getId());
+        evictAccountCache(toAccount.getId());
+
         return buildTransferResponse(transfer, fromAccount, toAccount);
+    }
+
+    private void cacheIdempotencyResult(String cacheKey, String requestHash, TransferResponse response) {
+        try {
+            IdempotencyRecord record = new IdempotencyRecord(requestHash, response);
+            String json = objectMapper.writeValueAsString(record);
+            redisTemplate.opsForValue().set(cacheKey, json, IDEMPOTENCY_TTL_HOURS, TimeUnit.HOURS);
+        } catch (Exception e) {
+            log.error("Failed to save idempotency result to Redis cache", e);
+        }
+    }
+
+    private void evictAccountCache(Long accountId) {
+        Cache accountCache = cacheManager.getCache("account");
+        if (accountCache != null) {
+            accountCache.evict(accountId);
+        }
     }
 
     private TransferResponse buildTransferResponse(Transfer transfer, Account fromAccount, Account toAccount) {
@@ -182,5 +239,20 @@ public class TransferService {
             transfer.getFromAccount(),
             transfer.getToAccount()
         );
+    }
+
+    private String calculateRequestHash(TransferRequest request) {
+        try {
+            String raw = request.getFromAccountNumber() + ":"
+                         + request.getToAccountNumber() + ":"
+                         + request.getAmount().setScale(2, RoundingMode.HALF_UP) + ":"
+                         + request.getCurrency();
+
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            return String.valueOf(request.hashCode());
+        }
     }
 }

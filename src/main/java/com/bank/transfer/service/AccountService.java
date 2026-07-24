@@ -16,6 +16,8 @@ import com.bank.transfer.repository.AccountRepository;
 import com.bank.transfer.repository.LedgerEntryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -79,15 +81,17 @@ public class AccountService {
             .build();
     }
 
+    @Cacheable(value = "account", key = "#id")
     @Transactional(readOnly = true)
-    public Account getAccountById(Long id) {
-        return accountRepository.findById(id)
+    public AccountResponse getAccountById(Long id) {
+        Account account = accountRepository.findById(id)
             .orElseThrow(() -> new AccountNotFoundException(String.valueOf(id)));
+        return mapToResponse(account);
     }
 
     @Transactional(readOnly = true)
     public AccountBalanceResponse getAccountBalance(Long id) {
-        Account account = getAccountById(id);
+        AccountResponse account = getAccountById(id);
         return new AccountBalanceResponse(
             account.getId(),
             account.getBalance().setScale(2, RoundingMode.HALF_UP),
@@ -102,7 +106,7 @@ public class AccountService {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "ERR_REQ_003", "Invalid page or size parameter");
         }
 
-        Account account = getAccountById(id);
+        AccountResponse account = getAccountById(id);
 
         PageRequest pageRequest = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         Page<LedgerEntry> entryPage = ledgerEntryRepository.findByAccountId(account.getId(), pageRequest);
@@ -128,6 +132,7 @@ public class AccountService {
         );
     }
 
+    @CacheEvict(value = "account", key = "#id")
     @Transactional
     public Account updateAccountStatus(Long id, AccountStatus newStatus) {
         Account account = accountRepository.findByIdForUpdate(id)
@@ -143,6 +148,7 @@ public class AccountService {
         return accountRepository.save(account);
     }
 
+    @CacheEvict(value = "account", key = "#id")
     @Transactional
     public DepositResponse deposit(Long id, BigDecimal amount) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -172,46 +178,12 @@ public class AccountService {
         return new DepositResponse(account.getId(), newBalance, entry.getId());
     }
 
-//    @Transactional
-//    public WithdrawResponse withdraw(Long id, BigDecimal amount) {
-//        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
-//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_001", "Withdrawal amount must be greater than zero");
-//        }
-//
-//        Account account = accountRepository.findByIdForUpdate(id)
-//            .orElseThrow(() -> new AccountNotFoundException(String.valueOf(id)));
-//
-//        if (account.getStatus() != AccountStatus.ACTIVE) {
-//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_003", "Account is not ACTIVE");
-//        }
-//
-//        if (account.getBalance().compareTo(amount) < 0) {
-//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_005", "Insufficient balance for withdrawal");
-//        }
-//
-//        BigDecimal newBalance = account.getBalance().subtract(amount).setScale(2, RoundingMode.HALF_UP);
-//        account.setBalance(newBalance);
-//        accountRepository.save(account);
-//
-//        LedgerEntry entry = LedgerEntry.builder()
-//            .account(account)
-//            .entryType(EntryType.DEBIT)
-//            .amount(amount.setScale(2, RoundingMode.HALF_UP))
-//            .balanceAfter(newBalance)
-//            .transfer(null)
-//            .build();
-//        entry = ledgerEntryRepository.save(entry);
-//
-//        return new WithdrawResponse(account.getId(), newBalance, entry.getId());
-//    }
-
+    @CacheEvict(value = "account", key = "#id")
     public WithdrawResponse withdraw(Long id, BigDecimal amount) {
-        // ห่อการทำงานด้วย Distributed Lock ของ accountId
-        return lockService.executeWithAccountLock(id, () -> {
-            return processWithdrawTransaction(id, amount);
-        });
+        return lockService.executeWithAccountLock(id, () -> processWithdrawTransaction(id, amount));
     }
 
+    @CacheEvict(value = "account", key = "#id")
     @Transactional
     public WithdrawResponse processWithdrawTransaction(Long id, BigDecimal amount) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {

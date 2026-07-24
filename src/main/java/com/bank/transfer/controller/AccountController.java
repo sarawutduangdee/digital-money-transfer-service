@@ -13,6 +13,7 @@ import com.bank.transfer.dto.WithdrawResponse;
 import com.bank.transfer.service.AccountService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -46,8 +47,7 @@ public class AccountController {
 
     @GetMapping("/{id}")
     public ResponseEntity<AccountResponse> getAccount(@PathVariable Long id) {
-        Account account = accountService.getAccountById(id);
-        return ResponseEntity.ok(accountService.mapToResponse(account));
+        return ResponseEntity.ok(accountService.getAccountById(id));
     }
 
     @GetMapping("/{id}/balance")
