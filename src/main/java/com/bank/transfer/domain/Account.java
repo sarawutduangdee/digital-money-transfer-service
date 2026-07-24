@@ -27,7 +27,7 @@ public class Account {
     @Column(name = "owner_name", nullable = false, length = 120)
     private String ownerName;
 
-    @Column(name = "currency", nullable = false, length = 3)
+    @Column(name = "currency", columnDefinition = "char(3)", nullable = false, length = 3)
     private String currency;
 
     @Column(name = "balance", nullable = false, precision = 19, scale = 4)

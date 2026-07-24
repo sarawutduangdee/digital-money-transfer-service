@@ -33,7 +33,7 @@ public class Transfer {
     @Column(name = "amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
 
-    @Column(name = "currency", nullable = false, length = 3)
+    @Column(name = "currency", columnDefinition = "char(3)", nullable = false, length = 3)
     private String currency;
 
     @Enumerated(EnumType.STRING)

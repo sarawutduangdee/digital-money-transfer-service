@@ -17,8 +17,7 @@ spring:
   # ตั้งค่า JPA (ปิด ddl-auto ตามที่โจทย์บังคับ)
   jpa:
     hibernate:
-      ddl-auto: none
-    show-sql: true
+      ddl-auto: validate
     properties:
       hibernate:
         format_sql: true
