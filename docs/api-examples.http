@@ -1,0 +1,77 @@
+### Digital Money Transfer Service — ตัวอย่างเรียก API ครบ flow หลัก
+### Base URL (context-path: /api/v1)
+@baseUrl = http://localhost:8080/api/v1
+
+### ─────────────────────────────────────────────
+### Flow 1: เปิดบัญชี (Create Account)
+### ─────────────────────────────────────────────
+POST {{baseUrl}}/accounts
+Content-Type: application/json
+
+{
+  "ownerName": "สมชาย ใจดี",
+  "currency": "THB",
+  "initialBalance": 1000.00
+}
+
+### เก็บ accountNumber จาก response ไว้ใช้ขั้นตอนถัดไป
+@accountNumber = 0000001001
+@accountId = 1
+
+### ─────────────────────────────────────────────
+### Flow 2: ฝากเงิน (Deposit)
+### ─────────────────────────────────────────────
+POST {{baseUrl}}/accounts/{{accountId}}/deposit
+Content-Type: application/json
+
+{
+  "amount": 500.00
+}
+
+### ─────────────────────────────────────────────
+### Flow 3: โอนเงิน (Transfer) — ต้องมี Idempotency-Key
+### ─────────────────────────────────────────────
+POST {{baseUrl}}/transfers
+Content-Type: application/json
+Idempotency-Key: demo-transfer-001
+
+{
+  "fromAccountNumber": "0000001001",
+  "toAccountNumber": "0000002002",
+  "amount": 200.00,
+  "currency": "THB"
+}
+
+### ดูรายละเอียดการโอน
+GET {{baseUrl}}/transfers/1
+
+### ─────────────────────────────────────────────
+### Flow 4: ดู Statement / ประวัติธุรกรรม
+### ─────────────────────────────────────────────
+GET {{baseUrl}}/accounts/{{accountId}}/transactions?page=0&size=20
+
+### ─────────────────────────────────────────────
+### API เสริม (ใช้ตรวจสอบระหว่างทดสอบ)
+### ─────────────────────────────────────────────
+
+### ดูข้อมูลบัญชี
+GET {{baseUrl}}/accounts/{{accountId}}
+
+### ดูยอดคงเหลือ
+GET {{baseUrl}}/accounts/{{accountId}}/balance
+
+### ถอนเงิน
+POST {{baseUrl}}/accounts/{{accountId}}/withdraw
+Content-Type: application/json
+
+{
+  "amount": 100.00
+}
+
+### เปลี่ยนสถานะบัญชี (ACTIVE / FROZEN / CLOSED)
+PATCH {{baseUrl}}/accounts/{{accountId}}/status
+Content-Type: application/json
+
+{
+  "status": "FROZEN"
+}
