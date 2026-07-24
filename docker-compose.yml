@@ -29,11 +29,12 @@ services:
 
   ibmmq:
     image: icr.io/ibm-messaging/mq:latest
-    platform: linux/amd64 # <--- เพิ่มบรรทัดนี้เพื่อให้ Mac M-Series โหลดได้
+    platform: linux/amd64
     container_name: bank-ibmmq
     environment:
       - LICENSE=accept
       - MQ_QMGR_NAME=QM1
+      - MQ_APP_PASSWORD=password123
     ports:
       - "1414:1414"
       - "9443:9443"

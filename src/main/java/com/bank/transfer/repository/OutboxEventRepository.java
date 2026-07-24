@@ -8,5 +8,6 @@ import java.util.List;
 
 public interface OutboxEventRepository extends JpaRepository<OutboxEvent, Long> {
 
+    List<OutboxEvent> findByStatus(OutboxStatus status);
     List<OutboxEvent> findByStatusOrderByCreatedAtAsc(OutboxStatus status);
 }

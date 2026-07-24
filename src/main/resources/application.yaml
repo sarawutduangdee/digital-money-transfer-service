@@ -34,14 +34,14 @@ spring:
       host: localhost
       port: 6379
 
-  # ตั้งค่า IBM MQ (JMS)
-  jms:
-    ibm:
-      queue-manager: QM1
-      channel: DEV.APP.SVRCONN
-      conn-name: localhost(1414)
-      user: app
-      password: ""
+# ตั้งค่า IBM MQ (JMS)
+ibm:
+  mq:
+    queue-manager: QM1
+    channel: DEV.APP.SVRCONN
+    conn-name: localhost(1414)
+    user: app
+    password: "password123"
 
 server:
   port: 8080
