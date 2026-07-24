@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -17,11 +18,9 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-
     private static final String ERROR_BASE_URL = "https://errors.bank.local/";
     private static final String TRACE_ID_HEADER = "X-Request-Id";
 
-    // Helper Method สำหรับดึง Trace ID จาก MDC (หรือ Header)
     private String getTraceId(HttpServletRequest request) {
         String traceId = MDC.get("traceId");
         if (traceId == null || traceId.isBlank()) {
@@ -30,20 +29,22 @@ public class GlobalExceptionHandler {
         return traceId != null ? traceId : "unknown";
     }
 
-    // 1. ดักจับ BusinessException ของเราเอง (404, 409, 422)
     @ExceptionHandler(BusinessException.class)
     public ProblemDetail handleBusinessException(BusinessException ex, HttpServletRequest request) {
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(ex.getStatus(), ex.getMessage());
 
-        // กำหนด Type ตามโจทย์: แปลง ErrorCode เป็น URL เช่น ERR_RULE_001 -> err-rule-001
         String typePath = ex.getErrorCode().toLowerCase().replace("_", "-");
         problemDetail.setType(URI.create(ERROR_BASE_URL + typePath));
 
-        // ตั้ง Title เป็นรายละเอียดย่อๆ (ตามโจทย์ต้องการ title แบบสื่อความหมาย)
-        // ถ้า Exception คุณมี field Title สามารถดึงมาใส่แทนค่า Hardcode ได้ครับ
-        problemDetail.setTitle("Business Rule Violation");
+        // 📌 ปรับ Title ให้เปลี่ยนตาม HTTP Status สวยงาม
+        if (ex.getStatus() == HttpStatus.CONFLICT) {
+            problemDetail.setTitle("Conflict");
+        } else if (ex.getStatus() == HttpStatus.UNPROCESSABLE_ENTITY) {
+            problemDetail.setTitle("Unprocessable Entity");
+        } else {
+            problemDetail.setTitle("Business Rule Violation");
+        }
 
-        // กำหนด instance และ traceId ตามสเปค PDF
         problemDetail.setInstance(URI.create(request.getRequestURI()));
         problemDetail.setProperty("traceId", getTraceId(request));
 
@@ -53,7 +54,24 @@ public class GlobalExceptionHandler {
         return problemDetail;
     }
 
-    // 2. ดักจับกรณี Body ผิดรูปแบบ (400 Bad Request) จาก @Valid
+    @ExceptionHandler(AccountNotFoundException.class)
+    public ProblemDetail handleAccountNotFoundException(AccountNotFoundException ex, HttpServletRequest request) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+            HttpStatus.NOT_FOUND,
+            ex.getMessage()
+        );
+        problemDetail.setType(URI.create(ERROR_BASE_URL + "account-not-found"));
+        problemDetail.setTitle("Account Not Found");
+
+        problemDetail.setInstance(URI.create(request.getRequestURI()));
+        problemDetail.setProperty("traceId", getTraceId(request));
+
+        problemDetail.setProperty("errorCode", "ERR_ACC_000");
+        problemDetail.setProperty("timestamp", Instant.now());
+
+        return problemDetail;
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail handleValidationExceptions(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> errors = new HashMap<>();
@@ -63,13 +81,20 @@ public class GlobalExceptionHandler {
             errors.put(fieldName, errorMessage);
         });
 
-        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Invalid request body format");
-        problemDetail.setType(URI.create(ERROR_BASE_URL + "bad-request"));
-        problemDetail.setTitle("Bad Request");
+        String firstErrorMessage = ex.getBindingResult().getFieldErrors().stream()
+            .map(error -> error.getField() + ": " + error.getDefaultMessage())
+            .findFirst()
+            .orElse("Validation failed");
+
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            firstErrorMessage
+        );
+        problemDetail.setType(URI.create(ERROR_BASE_URL + "invalid-account-data"));
+        problemDetail.setTitle("Unprocessable Entity");
 
         problemDetail.setInstance(URI.create(request.getRequestURI()));
         problemDetail.setProperty("traceId", getTraceId(request));
-
         problemDetail.setProperty("errorCode", "ERR_REQ_002");
         problemDetail.setProperty("invalidFields", errors);
         problemDetail.setProperty("timestamp", Instant.now());
@@ -77,7 +102,23 @@ public class GlobalExceptionHandler {
         return problemDetail;
     }
 
-    // ดักจับกรณี Header X-Request-Id หาย หรือ Header อื่นๆ หาย
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleHttpMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
+            HttpStatus.BAD_REQUEST,
+            "Malformed JSON request body or unparseable payload"
+        );
+        problemDetail.setType(URI.create(ERROR_BASE_URL + "bad-request"));
+        problemDetail.setTitle("Bad Request");
+
+        problemDetail.setInstance(URI.create(request.getRequestURI()));
+        problemDetail.setProperty("traceId", getTraceId(request));
+        problemDetail.setProperty("errorCode", "ERR_REQ_003");
+        problemDetail.setProperty("timestamp", Instant.now());
+
+        return problemDetail;
+    }
+
     @ExceptionHandler(MissingRequestHeaderException.class)
     public ProblemDetail handleMissingHeaderException(MissingRequestHeaderException ex, HttpServletRequest request) {
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
@@ -88,7 +129,7 @@ public class GlobalExceptionHandler {
         problemDetail.setTitle("Bad Request");
 
         problemDetail.setInstance(URI.create(request.getRequestURI()));
-        problemDetail.setProperty("traceId", getTraceId(request)); // อาจจะดึงได้เป็น unknown ถ้า Client ไม่ส่งมาและยังไม่ผ่าน Filter
+        problemDetail.setProperty("traceId", getTraceId(request));
 
         problemDetail.setProperty("errorCode", "ERR_REQ_001");
         problemDetail.setProperty("timestamp", Instant.now());
@@ -96,7 +137,6 @@ public class GlobalExceptionHandler {
         return problemDetail;
     }
 
-    // 3. ดักจับ Error ทั่วไป (500)
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleGenericException(Exception ex, HttpServletRequest request) {
         ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(

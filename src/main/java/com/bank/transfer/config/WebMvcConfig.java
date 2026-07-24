@@ -12,8 +12,8 @@ public class WebMvcConfig implements WebMvcConfigurer{
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // นำ Interceptor ไปดักเฉพาะเส้น API โอนเงิน
+
         registry.addInterceptor(rateLimitInterceptor)
-            .addPathPatterns("/api/v1/transfers", "/api/v1/transfers/**");
+            .addPathPatterns("/transfers", "/transfers/**");
     }
 }
