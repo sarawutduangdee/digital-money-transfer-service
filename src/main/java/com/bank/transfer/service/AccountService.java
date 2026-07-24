@@ -35,6 +35,7 @@ public class AccountService {
 
     private final AccountRepository accountRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final DistributedLockService lockService;
 
     @Transactional
     public AccountResponse createAccount(AccountCreateRequest request) {
@@ -171,8 +172,48 @@ public class AccountService {
         return new DepositResponse(account.getId(), newBalance, entry.getId());
     }
 
-    @Transactional
+//    @Transactional
+//    public WithdrawResponse withdraw(Long id, BigDecimal amount) {
+//        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_001", "Withdrawal amount must be greater than zero");
+//        }
+//
+//        Account account = accountRepository.findByIdForUpdate(id)
+//            .orElseThrow(() -> new AccountNotFoundException(String.valueOf(id)));
+//
+//        if (account.getStatus() != AccountStatus.ACTIVE) {
+//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_003", "Account is not ACTIVE");
+//        }
+//
+//        if (account.getBalance().compareTo(amount) < 0) {
+//            throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_005", "Insufficient balance for withdrawal");
+//        }
+//
+//        BigDecimal newBalance = account.getBalance().subtract(amount).setScale(2, RoundingMode.HALF_UP);
+//        account.setBalance(newBalance);
+//        accountRepository.save(account);
+//
+//        LedgerEntry entry = LedgerEntry.builder()
+//            .account(account)
+//            .entryType(EntryType.DEBIT)
+//            .amount(amount.setScale(2, RoundingMode.HALF_UP))
+//            .balanceAfter(newBalance)
+//            .transfer(null)
+//            .build();
+//        entry = ledgerEntryRepository.save(entry);
+//
+//        return new WithdrawResponse(account.getId(), newBalance, entry.getId());
+//    }
+
     public WithdrawResponse withdraw(Long id, BigDecimal amount) {
+        // ห่อการทำงานด้วย Distributed Lock ของ accountId
+        return lockService.executeWithAccountLock(id, () -> {
+            return processWithdrawTransaction(id, amount);
+        });
+    }
+
+    @Transactional
+    public WithdrawResponse processWithdrawTransaction(Long id, BigDecimal amount) {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_001", "Withdrawal amount must be greater than zero");
         }

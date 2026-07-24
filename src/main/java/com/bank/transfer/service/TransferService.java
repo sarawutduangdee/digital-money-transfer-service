@@ -20,11 +20,11 @@ import com.bank.transfer.repository.OutboxEventRepository;
 import com.bank.transfer.repository.TransferRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -40,9 +40,9 @@ public class TransferService {
     private final TransferRepository transferRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
     private final OutboxEventRepository outboxEventRepository;
+    private final DistributedLockService distributedLockService;
     private final ObjectMapper objectMapper;
 
-    @Transactional
     public TransferResponse processTransfer(String idempotencyKey, TransferRequest request) {
         Optional<Transfer> existingTransferOpt = transferRepository.findByIdempotencyKey(idempotencyKey);
         if (existingTransferOpt.isPresent()) {
@@ -65,6 +65,25 @@ public class TransferService {
         }
         if (request.getFromAccountNumber().equals(request.getToAccountNumber())) {
             throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "ERR_RULE_002", "Cannot transfer to the same account");
+        }
+
+        Account fromAccObj = accountRepository.findByAccountNumber(request.getFromAccountNumber())
+            .orElseThrow(() -> new AccountNotFoundException(request.getFromAccountNumber()));
+        Account toAccObj = accountRepository.findByAccountNumber(request.getToAccountNumber())
+            .orElseThrow(() -> new AccountNotFoundException(request.getToAccountNumber()));
+
+        return distributedLockService.executeWithTwoAccountsLock(fromAccObj.getId(), toAccObj.getId(), () ->
+            executeTransferInTransaction(idempotencyKey, request, fromAccObj.getId(), toAccObj.getId())
+        );
+    }
+
+    @Transactional
+    public TransferResponse executeTransferInTransaction(String idempotencyKey, TransferRequest request, Long fromId, Long toId) {
+
+        Optional<Transfer> existingTransferOpt = transferRepository.findByIdempotencyKey(idempotencyKey);
+        if (existingTransferOpt.isPresent()) {
+            Transfer existing = existingTransferOpt.get();
+            return buildTransferResponse(existing, existing.getFromAccount(), existing.getToAccount());
         }
 
         String fromAccStr = request.getFromAccountNumber();
@@ -137,7 +156,6 @@ public class TransferService {
         return buildTransferResponse(transfer, fromAccount, toAccount);
     }
 
-    // Helper Method สำหรับสร้าง Response เพื่อลดความซ้ำซ้อนของโค้ด
     private TransferResponse buildTransferResponse(Transfer transfer, Account fromAccount, Account toAccount) {
         return TransferResponse.builder()
             .transactionId(String.valueOf(transfer.getId()))
@@ -148,5 +166,21 @@ public class TransferService {
             .status(transfer.getStatus().name())
             .createdAt(transfer.getCreatedAt())
             .build();
+    }
+
+    @Transactional(readOnly = true)
+    public TransferResponse getTransferById(Long id) {
+        Transfer transfer = transferRepository.findById(id)
+            .orElseThrow(() -> new BusinessException(
+                HttpStatus.NOT_FOUND,
+                "ERR_TRANSFER_002",
+                "Transfer transaction not found with id: " + id
+            ));
+
+        return buildTransferResponse(
+            transfer,
+            transfer.getFromAccount(),
+            transfer.getToAccount()
+        );
     }
 }
